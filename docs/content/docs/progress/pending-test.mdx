@@ -5,6 +5,10 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+- 本机 Agent 停止回复：对话进行中输入框发送按钮变为「停止」，可中断 Codex MCP / 本地 CLI 当前回合；停止后不再继续写入对话内容，并移除已流式输出的半截回复；Windows 下会强制结束 CLI 进程树；canvas-agent 新增 `POST /agent/cancel`。
+- 工作流本地 Agent：生成配置节点在「文本」模式下可选择 Cursor Agent、Codex CLI、Claude Code、Codex（画布 MCP）等本地运行时；参考图会写入 canvas-agent 工作区并随提示词一起发送，生成中点击「停止」会同步取消本地 Agent 回合；工作流生成结果不再写入 Agent 对话面板。
+- 硅基流动等 OpenAI 兼容渠道：文本生成在 `/v1/responses` 返回 404 时会自动回退到 `/v1/chat/completions`；生图模式下若误选文本模型会提前提示。
+- 本地 Agent 运行时扫描：`canvas-agent` 新增 `GET /agent/runtimes` 与 `POST /agent/local/turn`，可扫描本机 Codex CLI、Cursor Agent、Claude Code；画布本地面板可切换运行时，默认仍保留 Codex 画布 MCP 模式与历史会话能力。
 - Codex App 插件文档：新增插件安装教程，区分 AI 自动安装、手动安装和本仓库开发调试安装；同步优化插件 README 与技能说明。
 - 配置与用户偏好：每个模型渠道新增 OpenAI / Gemini 调用格式选择，默认 OpenAI，切换默认格式时同步更新默认 Base URL；渠道 Tab 增加紧凑醒目的提醒，说明模型是否可选需要到“模型”Tab 选择。
 - Gemini 调用格式：支持拉取 Gemini 模型列表，并用于文本问答、在线 Agent 工具调用、基础生图和图生图请求。

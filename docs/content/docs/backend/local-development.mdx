@@ -7,18 +7,25 @@ description: 前端优先的本地开发方式
 
 当前主应用以 `web/` 前端为主，AI 请求由浏览器前台直连用户自己的 OpenAI 兼容接口。
 
-## 1. 启动前端
+## 1. 启动前端与本地 Agent
 
 ```bash
 cd web
-bun install
-bun run dev
+npm install --legacy-peer-deps
+npm run dev
 ```
 
-前端默认访问：
+`npm run dev` 会同时启动：
 
-```text
-http://localhost:3000
+- 画布前端：`http://localhost:3001`
+- 本机 Canvas Agent：`http://127.0.0.1:17371`
+
+开发环境下，前端会通过 `/canvas-agent/*` 代理到本机 Agent，打开画布后 Agent 面板会自动发现并连接，一般不需要再单独启动第二个终端。
+
+如果只想启动前端，不拉起 Agent：
+
+```bash
+npm run dev:web
 ```
 
 ## 2. 配置模型

@@ -65,6 +65,12 @@ type ResponseApiPayload = {
     msg?: string;
 };
 type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
+type ChatCompletionsStreamState = {
+    buffer: string;
+    text: string;
+    toolCalls: Map<number, ResponseToolCall>;
+    error?: string;
+};
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
@@ -386,7 +392,156 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     }
 }
 
-async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+function shouldFallbackToChatCompletions(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return /not found/i.test(message) || /\b404\b/.test(message) || /\b405\b/.test(message) || /method not allowed/i.test(message);
+}
+
+function toChatCompletionsMessages(input: ResponseInputItem[]) {
+    return input.flatMap((item) => {
+        if ("type" in item) {
+            if (item.type === "function_call") {
+                return [
+                    {
+                        role: "assistant" as const,
+                        content: null,
+                        tool_calls: [{ id: item.call_id, type: "function" as const, function: { name: item.name, arguments: item.arguments } }],
+                    },
+                ];
+            }
+            if (item.type === "function_call_output") {
+                return [{ role: "tool" as const, tool_call_id: item.call_id, content: item.output }];
+            }
+            return [];
+        }
+        const content =
+            typeof item.content === "string"
+                ? item.content
+                : item.content.map((part) =>
+                      part.type === "input_text" ? { type: "text" as const, text: part.text } : { type: "image_url" as const, image_url: { url: part.image_url } },
+                  );
+        return [{ role: item.role, content }];
+    });
+}
+
+function consumeChatCompletionsStreamBlock(block: string, state: ChatCompletionsStreamState, onDelta?: (text: string) => void) {
+    const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n")
+        .trim();
+    if (!data || data === "[DONE]") return;
+    const event = JSON.parse(data) as Record<string, unknown>;
+    const errorMessage = responseErrorMessage(event);
+    if (errorMessage) state.error = errorMessage;
+    const choices = Array.isArray(event.choices) ? event.choices : [];
+    for (const choice of choices) {
+        if (!isRecord(choice)) continue;
+        const delta = isRecord(choice.delta) ? choice.delta : undefined;
+        if (typeof delta?.content === "string") {
+            state.text += delta.content;
+            onDelta?.(state.text);
+        }
+        const toolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+        for (const toolCall of toolCalls) {
+            if (!isRecord(toolCall)) continue;
+            const index = typeof toolCall.index === "number" ? toolCall.index : 0;
+            const current = state.toolCalls.get(index) || { id: "", type: "function" as const, function: { name: "", arguments: "" } };
+            if (typeof toolCall.id === "string") current.id = toolCall.id;
+            const fn = isRecord(toolCall.function) ? toolCall.function : undefined;
+            if (typeof fn?.name === "string") current.function.name = fn.name;
+            if (typeof fn?.arguments === "string") current.function.arguments += fn.arguments;
+            state.toolCalls.set(index, current);
+        }
+        const message = isRecord(choice.message) ? choice.message : undefined;
+        if (!delta && typeof message?.content === "string") {
+            state.text = message.content;
+            onDelta?.(state.text);
+        }
+    }
+}
+
+function consumeChatCompletionsStreamText(state: ChatCompletionsStreamState, text: string, onDelta?: (text: string) => void, flush = false) {
+    state.buffer += text;
+    for (;;) {
+        const match = state.buffer.match(/\r?\n\r?\n/);
+        if (!match) break;
+        consumeChatCompletionsStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
+        state.buffer = state.buffer.slice(match.index + match[0].length);
+    }
+    if (flush && state.buffer.trim()) {
+        consumeChatCompletionsStreamBlock(state.buffer, state, onDelta);
+        state.buffer = "";
+    }
+}
+
+function parseChatCompletionsPayload(payload: Record<string, unknown>): ToolResponseResult {
+    const errorMessage = responseErrorMessage(payload);
+    if (errorMessage) throw new Error(errorMessage);
+    const choice = Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : undefined;
+    const message = choice && isRecord(choice.message) ? choice.message : undefined;
+    const content = typeof message?.content === "string" ? message.content : "";
+    const toolCalls = (Array.isArray(message?.tool_calls) ? message.tool_calls : [])
+        .filter(isRecord)
+        .map((item) => ({
+            id: stringValue(item.id),
+            type: "function" as const,
+            function: {
+                name: isRecord(item.function) ? stringValue(item.function.name) : "",
+                arguments: isRecord(item.function) ? stringValue(item.function.arguments) : "{}",
+            },
+        }))
+        .filter((item) => item.id && item.function.name);
+    return { content, toolCalls };
+}
+
+async function requestChatCompletionsStream(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    const input = (body.input as ResponseInputItem[] | undefined) || [];
+    const tools = body.tools as ResponseApiToolDefinition[] | undefined;
+    const payload: Record<string, unknown> = {
+        model: body.model,
+        messages: toChatCompletionsMessages(input),
+        stream: true,
+    };
+    if (tools?.length) {
+        payload.tools = tools.map((tool) => ({
+            type: "function",
+            function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+        }));
+        const toolChoice = body.tool_choice;
+        if (toolChoice === "required") payload.tool_choice = "required";
+        else if (isRecord(toolChoice) && toolChoice.type === "function" && typeof toolChoice.name === "string") {
+            payload.tool_choice = { type: "function", function: { name: toolChoice.name } };
+        } else if (toolChoice) payload.tool_choice = toolChoice;
+    }
+
+    const response = await fetch(aiApiUrl(config, "/chat/completions"), {
+        method: "POST",
+        headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
+        body: JSON.stringify(payload),
+        signal: options?.signal,
+    });
+    if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+    if (!response.body) {
+        return parseChatCompletionsPayload((await response.json()) as Record<string, unknown>);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: ChatCompletionsStreamState = { buffer: "", text: "", toolCalls: new Map() };
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeChatCompletionsStreamText(state, decoder.decode(value, { stream: true }), onDelta);
+        if (state.error) throw new Error(state.error);
+    }
+    consumeChatCompletionsStreamText(state, decoder.decode(), onDelta, true);
+    if (state.error) throw new Error(state.error);
+    return { content: state.text, toolCalls: [...state.toolCalls.values()].filter((item) => item.id && item.function.name) };
+}
+
+async function requestResponsesStream(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
     const response = await fetch(aiApiUrl(config, "/responses"), {
         method: "POST",
         headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
@@ -415,6 +570,15 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
     return { ...result, content: state.text || result.content };
+}
+
+async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    try {
+        return await requestResponsesStream(config, body, onDelta, options);
+    } catch (error) {
+        if (!shouldFallbackToChatCompletions(error)) throw error;
+        return await requestChatCompletionsStream(config, body, onDelta, options);
+    }
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {

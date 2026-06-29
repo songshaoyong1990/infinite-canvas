@@ -10,9 +10,11 @@ import { requestEdit, requestGeneration, requestImageQuestion } from "@/services
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { DOCS_URL } from "@/constant/env";
-import { defaultConfig, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, type AiConfig, modelMatchesCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+import { cancelLocalAgentTurn, requestWorkflowTextAnswer } from "@/lib/canvas-agent-api";
+import { decodeLocalAgentModel } from "@/lib/local-agent-model";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -370,6 +372,7 @@ function InfiniteCanvasPage() {
             affectedNodeIds.add(request.originNodeId);
         });
         setRunningNodeId((current) => (current === runningId ? null : current));
+        void cancelLocalAgentTurn();
         if (!affectedNodeIds.size) return;
         setNodes((prev) =>
             prev.map((node) =>
@@ -1952,8 +1955,13 @@ function InfiniteCanvasPage() {
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+            const localAgent = decodeLocalAgentModel(generationConfig.model);
+            if (!localAgent && !isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
+                return;
+            }
+            if (!localAgent && mode === "image" && !modelMatchesCapability(generationConfig.model, "image")) {
+                message.error("当前模型不支持生图，请在配置节点选择生图模型");
                 return;
             }
 
@@ -2233,12 +2241,22 @@ function InfiniteCanvasPage() {
                 const answers = await Promise.all(
                     textTargetIds.map((targetNodeId) => {
                         let localStreamed = "";
-                        return requestImageQuestion(generationConfig, buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }), (text) => {
-                            localStreamed = text;
-                            streamed = text;
-                            if (isConfigNode) return;
-                            setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
-                        }, { signal: controller.signal }).then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed })).finally(() => finishGenerationRequest(targetNodeId, controller));
+                        return requestWorkflowTextAnswer({
+                            config: generationConfig,
+                            model: generationConfig.model,
+                            messages: buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
+                            generationContext: { ...generationContext, prompt: effectivePrompt },
+                            canvasId: projectId,
+                            signal: controller.signal,
+                            onDelta: (text) => {
+                                localStreamed = text;
+                                streamed = text;
+                                if (isConfigNode) return;
+                                setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
+                            },
+                        })
+                            .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
+                            .finally(() => finishGenerationRequest(targetNodeId, controller));
                     }),
                 );
                 if (controller.signal.aborted) return;
@@ -2266,7 +2284,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest],
     );
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -2288,7 +2306,8 @@ function InfiniteCanvasPage() {
                           count: "1",
                       }
                     : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+            const localAgent = decodeLocalAgentModel(generationConfig.model);
+            if (!localAgent && !isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
             }
@@ -2318,10 +2337,18 @@ function InfiniteCanvasPage() {
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
                     let streamed = "";
-                    const answer = await requestImageQuestion(generationConfig, buildNodeResponseMessages({ ...context, prompt }), (text) => {
-                        streamed = text;
-                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
-                    }, { signal: controller.signal });
+                    const answer = await requestWorkflowTextAnswer({
+                        config: generationConfig,
+                        model: generationConfig.model,
+                        messages: buildNodeResponseMessages({ ...context, prompt }),
+                        generationContext: { ...context, prompt },
+                        canvasId: projectId,
+                        signal: controller.signal,
+                        onDelta: (text) => {
+                            streamed = text;
+                            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
+                        },
+                    });
                     setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, status: NODE_STATUS_SUCCESS } } : item)));
                     return;
                 }
@@ -2367,7 +2394,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest],
     );
 
     const generateImageFromTextNode = useCallback(

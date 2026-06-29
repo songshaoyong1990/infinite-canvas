@@ -1,0 +1,9 @@
+{
+    "name": "infinite-canvas-workspace",
+    "private": true,
+    "scripts": {
+        "dev": "npm run dev --prefix web",
+        "dev:web": "npm run dev:web --prefix web",
+        "dev:agent": "npm run dev:agent --prefix web"
+    }
+}

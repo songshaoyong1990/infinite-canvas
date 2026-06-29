@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
-import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, Square, UserRound, Wrench, X, XCircle } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { LocalUser } from "@/stores/use-user-store";
@@ -154,6 +154,7 @@ export function AgentChatComposer({
     theme,
     onPromptChange,
     onSubmit,
+    onStop,
     onAddFiles,
     onRemoveAttachment,
     left,
@@ -166,12 +167,14 @@ export function AgentChatComposer({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     onPromptChange: (value: string) => void;
     onSubmit: () => void;
+    onStop?: () => void;
     onAddFiles?: (files: FileList | File[] | null) => void | Promise<void>;
     onRemoveAttachment?: (id: string) => void;
     left?: ReactNode;
 }) {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const canSubmit = !disabled && !sending && Boolean(prompt.trim() || attachments.length);
+    const canStop = Boolean(sending && onStop);
     return (
         <div className="px-2 pb-2 pt-2" onWheelCapture={(event) => event.stopPropagation()}>
             <div className="rounded-[24px] border px-3 pb-3 pt-3 shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke }}>
@@ -223,7 +226,16 @@ export function AgentChatComposer({
                         ) : null}
                         {left}
                     </div>
-                    <Button type="primary" shape="circle" className="!h-10 !w-10 !min-w-10" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
+                    <Button
+                        type="primary"
+                        shape="circle"
+                        className="!h-10 !w-10 !min-w-10"
+                        danger={canStop}
+                        disabled={canStop ? false : !canSubmit}
+                        icon={canStop ? <Square className="size-3.5 fill-current" /> : sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                        onClick={() => (canStop ? onStop?.() : void onSubmit())}
+                        aria-label={canStop ? "停止" : "发送"}
+                    />
                 </div>
             </div>
         </div>

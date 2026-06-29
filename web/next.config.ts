@@ -22,6 +22,16 @@ export default function nextConfig(phase: string): NextConfig {
         env: {
             NEXT_PUBLIC_APP_VERSION: localVersion,
             NEXT_PUBLIC_APP_RELEASES: JSON.stringify(releases),
+            NEXT_PUBLIC_CANVAS_AGENT_URL: isDev ? "/canvas-agent" : "",
+            NEXT_PUBLIC_CANVAS_AGENT_SSE_ORIGIN: isDev ? process.env.CANVAS_AGENT_ORIGIN || "http://127.0.0.1:17371" : "",
         },
+        ...(isDev
+            ? {
+                  async rewrites() {
+                      const agentOrigin = process.env.CANVAS_AGENT_ORIGIN || "http://127.0.0.1:17371";
+                      return [{ source: "/canvas-agent/:path*", destination: `${agentOrigin}/:path*` }];
+                  },
+              }
+            : {}),
     };
 }

@@ -48,9 +48,11 @@
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
 cd web
-bun install
-bun run dev
+npm install --legacy-peer-deps
+npm run dev
 ```
+
+`npm run dev` 会同时启动画布前端（默认 `http://localhost:3001`）和本机 Canvas Agent；开发环境下 Agent 会自动通过 `/canvas-agent` 代理连接。
 
 Docker 运行：
 
@@ -59,7 +61,7 @@ docker build -t infinite-canvas .
 docker run --rm -p 3000:3000 infinite-canvas
 ```
 
-运行后默认端口3000，可访问 `http://localhost:3000`。
+运行后默认端口3001，可访问 `http://localhost:3001`。
 
 首次打开后进入右上角配置，填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。
 

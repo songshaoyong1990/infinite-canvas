@@ -2,8 +2,12 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import { DEFAULT_PORT, ensureCanvasWorkspace, loadConfig, saveConfig, updateCanvasWorkspace, type CanvasAgentConfig } from "./config.js";
 import { CanvasSession } from "./canvas-session.js";
+import { cancelActiveAgentTurn } from "./active-turn.js";
 import { archiveCodexThread, listCodexThreads, readCodexThread, resumeCodexThread, runClaudeTurn, runCodexTurn, startCodexThread, summarizeCodexThread, verifyCodexThreadWorkspace, withAgentPrompt } from "./agents.js";
+import { detectLocalRuntimes, runLocalRuntimeTurn } from "./local-runtimes/index.js";
 import type { AgentAttachment } from "./types.js";
+import { buildPromptWithWorkspaceAttachments } from "./workspace-attachments.js";
+import { createTurnEmit, readTurnMeta } from "./turn-meta.js";
 
 export function startHttpServer() {
     const config = loadConfig(true);
@@ -23,7 +27,7 @@ export function startHttpServer() {
         next();
     });
     app.get("/health", (_req, res) => res.json(session.health()));
-    app.get("/config", (_req, res) => res.json({ ok: true, url: config.url, hasToken: true }));
+    app.get("/config", (_req, res) => res.json({ ok: true, url: config.url, token: config.token, hasToken: Boolean(config.token) }));
     app.use((req, res, next) => {
         if (validToken(req, requestUrl(req, config), config.token)) return next();
         res.status(401).json({ ok: false, error: "invalid token" });
@@ -76,6 +80,8 @@ export function startHttpServer() {
     app.post("/agent/codex/turn", route(async (req, res) => {
         const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
         const workspace = ensureCanvasWorkspace(config, String(req.body?.canvasId || ""));
+        const turnMeta = readTurnMeta(req.body);
+        const turnEmit = createTurnEmit(emit, turnMeta);
         let threadId = String(req.body?.threadId || workspace.activeThreadId || "");
         if (!threadId) {
             const thread = await startCodexThread(emit, workspace.workspacePath);
@@ -85,21 +91,54 @@ export function startHttpServer() {
             await verifyCodexThreadWorkspace(emit, threadId, workspace.workspacePath);
             updateCanvasWorkspace(config, workspace.canvasId, { activeThreadId: threadId });
         }
-        void runCodexTurn(withAgentPrompt(String(req.body?.prompt || "")), emit, attachments, { threadId, cwd: workspace.workspacePath });
-        res.json({ ok: true, threadId });
+        void runCodexTurn(withAgentPrompt(String(req.body?.prompt || "")), turnEmit, attachments, { threadId, cwd: workspace.workspacePath });
+        res.json({ ok: true, threadId, ...turnMeta });
     }));
     app.post("/agent/claude/turn", (req, res) => {
         runClaudeTurn(withAgentPrompt(String(req.body?.prompt || "")), emit);
         res.json({ ok: true });
     });
+    app.post("/agent/cancel", route(async (_req, res) => {
+        res.json({ ok: true, cancelled: cancelActiveAgentTurn() });
+    }));
+    app.get("/agent/runtimes", route(async (_req, res) => {
+        const runtimes = await detectLocalRuntimes();
+        res.json({ ok: true, runtimes });
+    }));
+    app.post("/agent/local/turn", route(async (req, res) => {
+        const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
+        const workspace = ensureCanvasWorkspace(config, String(req.body?.canvasId || ""));
+        const turnMeta = readTurnMeta(req.body);
+        const turnEmit = createTurnEmit(emit, turnMeta);
+        const agentId = String(req.body?.agentId || "codex");
+        const basePrompt = withAgentPrompt(String(req.body?.prompt || ""));
+        if (!basePrompt.trim()) {
+            res.status(400).json({ ok: false, error: "prompt is required" });
+            return;
+        }
+        const prompt = await buildPromptWithWorkspaceAttachments(basePrompt, workspace.workspacePath, attachments);
+        void runLocalRuntimeTurn(
+            { agentId, prompt, cwd: workspace.workspacePath, model: String(req.body?.model || "") || undefined },
+            turnEmit,
+        );
+        res.json({ ok: true, agentId, ...turnMeta });
+    }));
     app.use((_req, res) => res.status(404).json({ ok: false, error: "not found" }));
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => res.status(500).json({ ok: false, error: error.message }));
 
-    app.listen(port, "127.0.0.1", () => {
+    const server = app.listen(port, "127.0.0.1", () => {
         console.log("Infinite Canvas Agent");
         console.log(`Local URL: ${config.url}`);
         console.log(`Connect token: ${config.token}`);
         console.log("Codex MCP: codex mcp add infinite-canvas -- npx -y @basketikun/canvas-agent mcp");
+    });
+    server.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") {
+            console.error(`端口 ${port} 已被占用。请先结束旧的 canvas-agent，或在 web 目录重新执行 npm run dev。`);
+        } else {
+            console.error(error.message);
+        }
+        process.exit(1);
     });
 }
 

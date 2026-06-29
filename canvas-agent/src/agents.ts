@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { AGENT_PROMPT, VERSION } from "./config.js";
+import { clearCodexCancel, consumeCancel, trackClaudeChild, trackCodexCancel } from "./active-turn.js";
 import type { AgentAttachment, AgentEmit } from "./types.js";
 
 type Json = Record<string, unknown>;
@@ -32,14 +33,22 @@ export async function runCodexTurn(prompt: string, emit: AgentEmit, attachments:
 
 async function runCodexTurnNow(prompt: string, emit: AgentEmit, attachments: AgentAttachment[], options: CodexRunOptions) {
     let files: string[] = [];
+    trackCodexCancel(() => {
+        codexApp?.cancelCurrentTurn("用户停止了当前回复");
+        emit("agent_event", { agent: "codex", type: "turn.failed", cancelled: true });
+        emit("agent_done", { agent: "codex", cancelled: true });
+    });
     try {
         files = await writeAttachmentFiles(attachments);
         codexApp ||= await CodexAppClient.start(emit);
         const threadId = await ensureCodexThread(codexApp, options);
         await codexApp.startTurn(threadId, prompt, files);
     } catch (error) {
+        if (String(error instanceof Error ? error.message : error).includes("用户停止了当前回复")) return;
         emit("agent_error", { message: errorMessage(error) });
+        emit("agent_done", { agent: "codex", code: 1 });
     } finally {
+        clearCodexCancel();
         await Promise.all(files.map((file) => fs.unlink(file).catch(() => undefined)));
     }
 }
@@ -93,6 +102,7 @@ export function runClaudeTurn(prompt: string, emit: AgentEmit) {
     if (!prompt.trim()) return;
     const child = spawnAgent("claude", ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--allowedTools", "mcp__infinite-canvas__*", prompt], ["ignore", "pipe", "pipe"], emit);
     if (!child) return;
+    trackClaudeChild(child);
     pipeJsonLines(child, emit, "claude");
 }
 
@@ -180,6 +190,13 @@ class CodexAppClient {
             return;
         }
         await new Promise((resolve, reject) => this.activeTurns.set(turnId, { resolve, reject }));
+    }
+
+    cancelCurrentTurn(message: string) {
+        for (const [turnId, pending] of this.activeTurns) {
+            pending.reject(new Error(message));
+            this.activeTurns.delete(turnId);
+        }
     }
 
     private request(method: string, params: unknown) {
@@ -474,7 +491,14 @@ function pipeJsonLines(child: ReturnType<typeof spawn>, emit: AgentEmit, agent: 
     });
     child.stderr?.on("data", (chunk) => emit("agent_log", { text: chunk.toString() }));
     child.on("error", (error) => emit("agent_error", { message: error.message }));
-    child.on("close", (code) => emit("agent_done", { agent, code }));
+    child.on("close", (code) => {
+        if (consumeCancel()) {
+            emit("agent_event", { agent, type: "turn.failed", cancelled: true });
+            emit("agent_done", { agent, cancelled: true });
+            return;
+        }
+        emit("agent_done", { agent, code });
+    });
 }
 
 function spawnAgent(name: string, args: string[], stdio: StdioOptions, emit: AgentEmit) {
