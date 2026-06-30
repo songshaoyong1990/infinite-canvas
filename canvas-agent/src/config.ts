@@ -8,6 +8,7 @@ export const CONFIG_DIR = path.join(os.homedir(), ".infinite-canvas");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "canvas-agent.json");
 export const VERSION = readPackageVersion();
 export const AGENT_PROMPT = "你正在帮助用户操作 Infinite Canvas 网页画布。需要改动画布时优先使用已配置的 infinite-canvas MCP 工具：先 canvas_get_state 读取当前画布，再根据任务使用 canvas_create_text_node、canvas_generate_text、canvas_generate_image、canvas_generate_video、canvas_generate_audio、canvas_create_generation_flow、canvas_create_config_node、canvas_run_generation、canvas_update_node、canvas_connect_nodes 等通用工具；复杂批量改动再用 canvas_apply_ops，删除连线可用 delete_connections。需要生成内容时直接调用对应生成工具，不要绑定特定业务场景。不要模拟鼠标点击，不要要求用户手动复制 JSON。";
+export const WORKFLOW_TEXT_PROMPT = "你是工作流文本生成助手。根据用户提示词和参考图片（如有）直接输出最终文本结果。不要调用任何工具，不要修改画布，不要解释过程，只输出用户需要的正文。";
 
 export type CanvasWorkspaceConfig = { workspacePath: string; activeThreadId?: string; pinnedThreadIds?: string[] };
 export type CanvasAgentConfig = { url: string; token: string; origins?: string[]; canvases?: Record<string, CanvasWorkspaceConfig> };

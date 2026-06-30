@@ -10,7 +10,7 @@ import { requestEdit, requestGeneration, requestImageQuestion } from "@/services
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { DOCS_URL } from "@/constant/env";
-import { defaultConfig, type AiConfig, modelMatchesCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, type AiConfig, isVisionModelName, modelMatchesCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { cancelLocalAgentTurn, requestWorkflowTextAnswer } from "@/lib/canvas-agent-api";
@@ -1983,6 +1983,12 @@ function InfiniteCanvasPage() {
             if (!effectivePrompt && (mode === "text" || mode === "audio")) {
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
+                return;
+            }
+            if (mode === "text" && !localAgent && generationContext.referenceImages.length > 0 && !isVisionModelName(generationConfig.model)) {
+                finishGenerationRequest(nodeId, runController);
+                setRunningNodeId(null);
+                message.error("当前模型不支持参考图识图。请切换视觉模型（如 deepseek-ai/deepseek-vl2、Qwen2-VL），或选择本地 Agent。");
                 return;
             }
             let pendingChildIds: string[] = [];

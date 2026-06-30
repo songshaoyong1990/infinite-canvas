@@ -4,6 +4,7 @@ import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChanne
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
+import { isVisionModelName } from "@/stores/use-config-store";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
@@ -324,7 +325,21 @@ function responseErrorMessage(value: unknown) {
     const error = isRecord(value.error) ? value.error : undefined;
     const response = isRecord(value.response) ? value.response : undefined;
     const responseError = response && isRecord(response.error) ? response.error : undefined;
-    return stringValue(value.msg) || stringValue(error?.message) || stringValue(responseError?.message);
+    return stringValue(value.msg) || stringValue(value.message) || stringValue(error?.message) || stringValue(responseError?.message);
+}
+
+function prefersChatCompletionsUrl(baseUrl: string) {
+    const value = baseUrl.toLowerCase();
+    return value.includes("siliconflow") || value.includes("deepseek.com") || value.includes("dashscope.aliyuncs.com") || value.includes("moonshot.cn") || value.includes("bigmodel.cn");
+}
+
+function adaptChatCompletionsInput(input: ResponseInputItem[], model: string) {
+    if (isVisionModelName(model)) return input;
+    const hasImages = input.some((item) => "role" in item && Array.isArray(item.content) && item.content.some((part) => part.type === "input_image"));
+    if (hasImages) {
+        throw new Error("当前模型不支持参考图识图。请切换视觉模型（如 deepseek-ai/deepseek-vl2、Qwen2-VL），或选择本地 Agent。");
+    }
+    return input;
 }
 
 function stringValue(value: unknown) {
@@ -497,10 +512,11 @@ function parseChatCompletionsPayload(payload: Record<string, unknown>): ToolResp
 }
 
 async function requestChatCompletionsStream(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const input = (body.input as ResponseInputItem[] | undefined) || [];
+    const model = stringValue(body.model) || config.model;
+    const input = adaptChatCompletionsInput((body.input as ResponseInputItem[] | undefined) || [], model);
     const tools = body.tools as ResponseApiToolDefinition[] | undefined;
     const payload: Record<string, unknown> = {
-        model: body.model,
+        model,
         messages: toChatCompletionsMessages(input),
         stream: true,
     };
@@ -573,6 +589,9 @@ async function requestResponsesStream(config: AiConfig, body: Record<string, unk
 }
 
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    if (prefersChatCompletionsUrl(config.baseUrl)) {
+        return await requestChatCompletionsStream(config, body, onDelta, options);
+    }
     try {
         return await requestResponsesStream(config, body, onDelta, options);
     } catch (error) {
@@ -848,6 +867,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const hasImages = messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+    if (hasImages && !isVisionModelName(requestConfig.model)) {
+        throw new Error("当前模型不支持参考图识图。请切换视觉模型（如 deepseek-ai/deepseek-vl2、Qwen2-VL），或选择本地 Agent。");
+    }
     try {
         if (requestConfig.apiFormat === "gemini") {
             const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";

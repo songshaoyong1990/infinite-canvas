@@ -112,6 +112,12 @@ export async function requestLocalAgentText(options: LocalAgentTextOptions) {
         turnId,
     };
 
+    const bumpWorkflowTurn = (delta: number) => {
+        const current = useCanvasAgentStore.getState().workflowTurnCount;
+        useCanvasAgentStore.getState().setAgentState({ workflowTurnCount: Math.max(0, current + delta) });
+    };
+    bumpWorkflowTurn(1);
+
     return await new Promise<string>((resolve, reject) => {
         let text = "";
         let finished = false;
@@ -128,6 +134,7 @@ export async function requestLocalAgentText(options: LocalAgentTextOptions) {
         const finish = (result: string) => {
             if (finished) return;
             finished = true;
+            bumpWorkflowTurn(-1);
             cleanup();
             resolve(result);
         };
@@ -135,6 +142,7 @@ export async function requestLocalAgentText(options: LocalAgentTextOptions) {
         const fail = (error: Error) => {
             if (finished) return;
             finished = true;
+            bumpWorkflowTurn(-1);
             cleanup();
             reject(error);
         };
@@ -176,7 +184,7 @@ export async function requestLocalAgentText(options: LocalAgentTextOptions) {
             const data = parseEventData<{ cancelled?: boolean; code?: number; turnId?: string }>(event);
             if (data?.turnId !== turnId) return;
             if (data?.cancelled) fail(new Error("请求已取消"));
-            if (turnStarted && !finished && data?.code === 0) finish(text);
+            if (turnStarted && !finished && (data?.code === 0 || data?.code === undefined)) finish(text);
         });
 
         source.onerror = () => {

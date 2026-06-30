@@ -37,6 +37,7 @@ type CanvasAgentStore = {
     loadingRuntimes: boolean;
     selectedRuntimeId: string;
     selectedModelId: string;
+    workflowTurnCount: number;
     setAgentState: (patch: Partial<Omit<CanvasAgentStore, "setAgentState" | "addMessage" | "addEventLog" | "clearEventLogs">>) => void;
     addMessage: (item: AgentChatItem) => void;
     addEventLog: (item: AgentEventLog) => void;
@@ -68,6 +69,7 @@ export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
     loadingRuntimes: false,
     selectedRuntimeId: typeof window === "undefined" ? "codex-mcp" : localStorage.getItem("canvas-agent-runtime") || "codex-mcp",
     selectedModelId: typeof window === "undefined" ? "default" : localStorage.getItem("canvas-agent-model") || "default",
+    workflowTurnCount: 0,
     setAgentState: (patch) => set(patch),
     addMessage: (item) => set((state) => ({ messages: [...state.messages.slice(-120), item] })),
     addEventLog: (item) => set((state) => ({ eventLogs: [...state.eventLogs.slice(-160), item] })),

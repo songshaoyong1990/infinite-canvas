@@ -10,7 +10,7 @@ export type RuntimeAgentDef = {
     listModels?: { args: string[]; timeoutMs?: number; parse: (stdout: string) => RuntimeModelOption[] | null };
     authProbe?: { args: string[]; timeoutMs?: number };
     fallbackModels: RuntimeModelOption[];
-    buildArgs: (options: { model?: string; cwd?: string; trust?: boolean }) => string[];
+    buildArgs: (options: { model?: string; cwd?: string; trust?: boolean; workflow?: boolean }) => string[];
     promptViaStdin: boolean;
     eventParser: string;
     binEnvKey?: string;

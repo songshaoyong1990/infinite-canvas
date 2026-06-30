@@ -5,6 +5,7 @@ import { createJsonEventStreamHandler } from "./json-event-stream.js";
 import { prependLaunchPath, resolveLaunchPath } from "./launch.js";
 import { createCommandInvocation } from "./spawn-invocation.js";
 import { consumeCancel, isTurnCancelled, trackLocalChild } from "../active-turn.js";
+import { beginWorkflowTurn, endWorkflowTurn } from "../workflow-turn.js";
 import type { DetectedRuntime } from "./types.js";
 import type { AgentEmit } from "../types.js";
 
@@ -13,6 +14,8 @@ type LocalTurnOptions = {
     prompt: string;
     cwd?: string;
     model?: string;
+    workflow?: boolean;
+    workflowTurnId?: string;
 };
 
 class StreamBridge {
@@ -110,8 +113,13 @@ export function runLocalRuntimeTurn(options: LocalTurnOptions, emit: AgentEmit) 
         emit("agent_done", { agent: options.agentId, code: 1 });
         return;
     }
+    if (options.workflowTurnId) beginWorkflowTurn(options.workflowTurnId);
+    const finishWorkflow = () => {
+        if (options.workflowTurnId) endWorkflowTurn(options.workflowTurnId);
+    };
     const launch = resolveLaunchPath(def);
     if (!launch?.launchPath) {
+        finishWorkflow();
         emit("agent_error", { message: `${def.name} 未安装或不在 PATH 中` });
         emit("agent_done", { agent: options.agentId, code: 1 });
         return;
@@ -120,8 +128,8 @@ export function runLocalRuntimeTurn(options: LocalTurnOptions, emit: AgentEmit) 
     const env = prependLaunchPath({ ...process.env }, launch.childPathPrepend);
     const args =
         def.id === "claude"
-            ? [...def.buildArgs({ model: options.model, cwd: options.cwd }), options.prompt]
-            : def.buildArgs({ model: options.model, cwd: options.cwd, trust: true });
+            ? [...def.buildArgs({ model: options.model, cwd: options.cwd, workflow: options.workflow }), options.prompt]
+            : def.buildArgs({ model: options.model, cwd: options.cwd, trust: true, workflow: options.workflow });
     const cwd = options.cwd || process.cwd();
     const invocation = createCommandInvocation({ command: launch.launchPath, args, env });
     let child: ChildProcess;
@@ -135,6 +143,7 @@ export function runLocalRuntimeTurn(options: LocalTurnOptions, emit: AgentEmit) 
             windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         });
     } catch (error) {
+        finishWorkflow();
         const message = error instanceof Error ? error.message : "启动本地 CLI 失败";
         emit("agent_error", { message });
         emit("agent_done", { agent: options.agentId, code: 1 });
@@ -144,6 +153,7 @@ export function runLocalRuntimeTurn(options: LocalTurnOptions, emit: AgentEmit) 
 
     if (def.id === "claude") {
         pipeClaudeJson(child, emit, def.id);
+        child.on("close", () => finishWorkflow());
         return;
     }
 
@@ -155,10 +165,12 @@ export function runLocalRuntimeTurn(options: LocalTurnOptions, emit: AgentEmit) 
     });
     child.stderr?.on("data", (chunk) => emit("agent_log", { text: chunk.toString() }));
     child.on("error", (error) => {
+        finishWorkflow();
         emit("agent_error", { message: error.message });
         emit("agent_done", { agent: def.id, code: 1 });
     });
     child.on("close", (code) => {
+        finishWorkflow();
         if (consumeCancel()) {
             bridge.cancel();
             emit("agent_event", { agent: def.id, type: "turn.failed", cancelled: true });

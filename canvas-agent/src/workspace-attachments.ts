@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type { AgentAttachment } from "../types.js";
@@ -23,4 +24,11 @@ export async function buildPromptWithWorkspaceAttachments(prompt: string, worksp
     const files = await Promise.all(images.map((item, index) => writeWorkspaceAttachment(workspacePath, item, index)));
     const lines = files.map((file, index) => `${index + 1}. ${path.basename(file)}`);
     return `${prompt}\n\n参考图片已保存在工作区，可直接读取：\n${lines.join("\n")}`;
+}
+
+export async function ensureWorkflowWorkspace(turnId: string) {
+    const safeId = turnId.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 80) || "workflow";
+    const dir = path.join(os.tmpdir(), "infinite-canvas-workflow", safeId);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
 }

@@ -300,6 +300,10 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
     };
 
     const handleToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
+        if (useCanvasAgentStore.getState().workflowTurnCount > 0) {
+            await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: "工作流生成进行中，已忽略画布工具调用" });
+            return;
+        }
         if (confirmToolsRef.current && payload.name === "canvas_apply_ops") {
             if (pendingToolRef.current) {
                 await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: "仍有待确认的画布工具调用" });
@@ -595,6 +599,7 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
                 if (data) handleAgentEventRef.current(data);
             });
             source.addEventListener("agent_log", (event) => {
+                if (useCanvasAgentStore.getState().workflowTurnCount > 0) return;
                 const text = parseEventData<{ text?: unknown }>(event)?.text;
                 addEventLog("日志", text, text);
             });

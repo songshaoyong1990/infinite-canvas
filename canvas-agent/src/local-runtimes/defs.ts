@@ -86,9 +86,10 @@ export const CURSOR_AGENT_RUNTIME_DEF: RuntimeAgentDef = {
     fallbackModels: [DEFAULT_MODEL_OPTION, { id: "auto", label: "auto" }, { id: "sonnet-4", label: "sonnet-4" }],
     promptViaStdin: true,
     eventParser: "cursor-agent",
-    buildArgs: ({ model, cwd }) => {
+    buildArgs: ({ model, cwd, trust, workflow }) => {
         const caps = getAgentCapabilities("cursor-agent");
         const args = ["--print", "--output-format", "stream-json", "--stream-partial-output", "--force"];
+        if (workflow) args.push("--mode", "ask");
         if (caps.trust) args.push("--trust");
         if (cwd) args.push("--workspace", cwd);
         if (model && model !== "default") args.push("--model", model);

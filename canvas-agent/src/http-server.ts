@@ -3,11 +3,12 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { DEFAULT_PORT, ensureCanvasWorkspace, loadConfig, saveConfig, updateCanvasWorkspace, type CanvasAgentConfig } from "./config.js";
 import { CanvasSession } from "./canvas-session.js";
 import { cancelActiveAgentTurn } from "./active-turn.js";
-import { archiveCodexThread, listCodexThreads, readCodexThread, resumeCodexThread, runClaudeTurn, runCodexTurn, startCodexThread, summarizeCodexThread, verifyCodexThreadWorkspace, withAgentPrompt } from "./agents.js";
+import { archiveCodexThread, listCodexThreads, readCodexThread, resumeCodexThread, runClaudeTurn, runCodexTurn, startCodexThread, summarizeCodexThread, verifyCodexThreadWorkspace, withAgentPrompt, withWorkflowPrompt } from "./agents.js";
 import { detectLocalRuntimes, runLocalRuntimeTurn } from "./local-runtimes/index.js";
 import type { AgentAttachment } from "./types.js";
-import { buildPromptWithWorkspaceAttachments } from "./workspace-attachments.js";
+import { buildPromptWithWorkspaceAttachments, ensureWorkflowWorkspace } from "./workspace-attachments.js";
 import { createTurnEmit, readTurnMeta } from "./turn-meta.js";
+import { isWorkflowTurnActive } from "./workflow-turn.js";
 
 export function startHttpServer() {
     const config = loadConfig(true);
@@ -41,7 +42,13 @@ export function startHttpServer() {
         session.resolveResult(req.body);
         res.json({ ok: true });
     });
-    app.post("/api/tools", route(async (req, res) => res.json({ ok: true, result: await session.callTool(req.body?.name, req.body?.input || {}) })));
+    app.post("/api/tools", route(async (req, res) => {
+        if (isWorkflowTurnActive()) {
+            res.json({ ok: false, error: "工作流模式下不可用画布工具" });
+            return;
+        }
+        res.json({ ok: true, result: await session.callTool(req.body?.name, req.body?.input || {}) });
+    }));
     app.get("/agent/codex/workspace", (req, res) => {
         const workspace = ensureCanvasWorkspace(config, String(req.query.canvasId || ""));
         res.json({ ok: true, workspace });
@@ -107,18 +114,20 @@ export function startHttpServer() {
     }));
     app.post("/agent/local/turn", route(async (req, res) => {
         const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
-        const workspace = ensureCanvasWorkspace(config, String(req.body?.canvasId || ""));
         const turnMeta = readTurnMeta(req.body);
+        const isWorkflow = turnMeta.source === "workflow";
         const turnEmit = createTurnEmit(emit, turnMeta);
         const agentId = String(req.body?.agentId || "codex");
-        const basePrompt = withAgentPrompt(String(req.body?.prompt || ""));
+        const rawPrompt = String(req.body?.prompt || "");
+        const basePrompt = isWorkflow ? withWorkflowPrompt(rawPrompt) : withAgentPrompt(rawPrompt);
         if (!basePrompt.trim()) {
             res.status(400).json({ ok: false, error: "prompt is required" });
             return;
         }
-        const prompt = await buildPromptWithWorkspaceAttachments(basePrompt, workspace.workspacePath, attachments);
+        const workspacePath = isWorkflow && turnMeta.turnId ? await ensureWorkflowWorkspace(turnMeta.turnId) : ensureCanvasWorkspace(config, String(req.body?.canvasId || "")).workspacePath;
+        const prompt = await buildPromptWithWorkspaceAttachments(basePrompt, workspacePath, attachments);
         void runLocalRuntimeTurn(
-            { agentId, prompt, cwd: workspace.workspacePath, model: String(req.body?.model || "") || undefined },
+            { agentId, prompt, cwd: workspacePath, model: String(req.body?.model || "") || undefined, workflow: isWorkflow, workflowTurnId: isWorkflow ? turnMeta.turnId : undefined },
             turnEmit,
         );
         res.json({ ok: true, agentId, ...turnMeta });

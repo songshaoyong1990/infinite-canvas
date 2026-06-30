@@ -143,6 +143,25 @@ function isTextModelName(model: string) {
     return !isImageModelName(model) && !isVideoModelName(model) && !isAudioModelName(model);
 }
 
+export function isVisionModelName(model: string) {
+    const value = modelOptionName(model).toLowerCase();
+    return (
+        value.includes("vl") ||
+        value.includes("vision") ||
+        value.includes("gpt-4o") ||
+        value.includes("gpt-4.1") ||
+        value.includes("gemini") ||
+        value.includes("qwen-vl") ||
+        value.includes("qwen2-vl") ||
+        value.includes("qwen3-vl") ||
+        value.includes("internvl") ||
+        value.includes("minicpm-v") ||
+        value.includes("llava") ||
+        value.includes("glm-4v") ||
+        value.includes("deepseek-vl")
+    );
+}
+
 export function modelMatchesCapability(model: string, capability?: ModelCapability) {
     if (!capability) return true;
     if (capability === "image") return isImageModelName(model);
